@@ -22,3 +22,11 @@ local/
 system_tests/test-data/*
 system_tests/testdata/*
 arbos/testdata/*
+
+
+.direnv
+rollup-data-availability
+nitro.log
+orbit-setup-script
+
+.config/

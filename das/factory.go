@@ -10,6 +10,7 @@ import (
 	"math"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/log"
 
 	"github.com/offchainlabs/nitro/arbutil"
 	"github.com/offchainlabs/nitro/solgen/go/bridgegen"
@@ -139,6 +140,37 @@ func WrapStorageWithCache(
 	return storageService, nil
 }
 
+func CreateNearDAS(
+	ctx context.Context,
+	config *DataAvailabilityConfig,
+	lifecycleManager *LifecycleManager,
+) (DataAvailabilityServiceWriter, DataAvailabilityServiceReader, *NearService, error) {
+	if !config.NEARAggregator.Enable {
+		return nil, nil, nil, errors.New("--node.data-availability.near-aggregator.enable must be set")
+	}
+
+	log.Info("Initialising near service")
+	nearSvc, err := NewNearService(*config)
+	if err != nil {
+		log.Error("initialising near service", "error", err)
+		return nil, nil, nil, err
+	}
+	var nearWriter DataAvailabilityServiceWriter = nearSvc
+	// log.Info("initialising near aggregator")
+	//nearAggr, err = NewNearAggregator(ctx, *config, nearSvc)
+	// if err != nil {
+	// 	return nil, nil, err
+	// }
+
+	var nearReader DataAvailabilityServiceReader = nearSvc
+	log.Info("initialising Chain Fetch Reader")
+	// FIXME: lifecycleManager.Register(nearr)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return nearWriter, nearReader, nearSvc, nil
+}
+
 func CreateBatchPosterDAS(
 	ctx context.Context,
 	config *DataAvailabilityConfig,
@@ -220,51 +252,101 @@ func CreateDAComponentsForDaserver(
 		return nil, nil, nil, nil, err
 	}
 
-	// The REST aggregator is used as the fallback if requested data is not present
-	// in the storage service.
-	if config.RestAggregator.Enable {
-		restAgg, err := NewRestfulClientAggregator(ctx, &config.RestAggregator)
+	var daWriter DataAvailabilityServiceWriter
+	var daReader DataAvailabilityServiceReader = storageService
+	var daHealthChecker DataAvailabilityServiceHealthChecker = storageService
+
+	if config.NEARAggregator.Enable {
+		log.Info("Enabling NEAR aggregator")
+		w, r, svc, err := CreateNearDAS(ctx, config, dasLifecycleManager)
 		if err != nil {
 			return nil, nil, nil, nil, err
 		}
-		restAgg.Start(ctx)
-		dasLifecycleManager.Register(restAgg)
-
-		syncConf := &config.RestAggregator.SyncToStorage
-		var retentionPeriodSeconds uint64
-		if uint64(syncConf.RetentionPeriod) == math.MaxUint64 {
-			retentionPeriodSeconds = math.MaxUint64
-		} else {
-			retentionPeriodSeconds = uint64(syncConf.RetentionPeriod.Seconds())
-		}
-
-		if syncConf.Eager {
-			if l1Reader == nil || seqInboxAddress == nil {
-				return nil, nil, nil, nil, errors.New("l1-node-url and sequencer-inbox-address must be specified along with sync-to-storage.eager")
+		if config.NEARAggregator.StorageConfig.Enable {
+			nearStorageService, err := NewNearStorageService(r, *svc, config.NEARAggregator.StorageConfig.DataDir)
+			if err != nil {
+				return nil, nil, nil, nil, err
 			}
-			storageService, err = NewSyncingFallbackStorageService(
-				ctx,
-				storageService,
-				restAgg,
-				restAgg,
-				l1Reader,
-				*seqInboxAddress,
-				syncConf)
+			daReader = nearStorageService
+			syncConf := config.NEARAggregator.StorageConfig.SyncToStorage
+			var retentionPeriodSeconds uint64
+			if uint64(syncConf.RetentionPeriod) == math.MaxUint64 {
+				retentionPeriodSeconds = math.MaxUint64
+			} else {
+				retentionPeriodSeconds = uint64(syncConf.RetentionPeriod.Seconds())
+			}
+
+			if config.NEARAggregator.StorageConfig.SyncToStorage.Eager {
+				if l1Reader == nil || seqInboxAddress == nil {
+					return nil, nil, nil, nil, errors.New("l1-node-url and sequencer-inbox-address must be specified along with sync-to-storage.eager")
+				}
+				storageService, err = NewSyncingFallbackStorageService(
+					ctx,
+					nearStorageService,
+					storageService,
+					storageService,
+					l1Reader,
+					*seqInboxAddress,
+					&syncConf)
+				if err != nil {
+					return nil, nil, nil, nil, err
+				}
+			} else {
+				storageService = NewFallbackStorageService(nearStorageService, storageService, storageService,
+					retentionPeriodSeconds, syncConf.IgnoreWriteErrors, true)
+			}
+
 			dasLifecycleManager.Register(storageService)
 			if err != nil {
 				return nil, nil, nil, nil, err
 			}
 		} else {
-			storageService = NewFallbackStorageService(storageService, restAgg, restAgg,
-				retentionPeriodSeconds, syncConf.IgnoreWriteErrors, true)
-			dasLifecycleManager.Register(storageService)
+			daWriter = w
+			daReader = r
 		}
+	} else {
+		// The REST aggregator is used as the fallback if requested data is not present
+		// in the storage service.
+		if config.RestAggregator.Enable {
+			restAgg, err := NewRestfulClientAggregator(ctx, &config.RestAggregator)
+			if err != nil {
+				return nil, nil, nil, nil, err
+			}
+			restAgg.Start(ctx)
+			dasLifecycleManager.Register(restAgg)
 
+			syncConf := &config.RestAggregator.SyncToStorage
+			var retentionPeriodSeconds uint64
+			if uint64(syncConf.RetentionPeriod) == math.MaxUint64 {
+				retentionPeriodSeconds = math.MaxUint64
+			} else {
+				retentionPeriodSeconds = uint64(syncConf.RetentionPeriod.Seconds())
+			}
+
+			if syncConf.Eager {
+				if l1Reader == nil || seqInboxAddress == nil {
+					return nil, nil, nil, nil, errors.New("l1-node-url and sequencer-inbox-address must be specified along with sync-to-storage.eager")
+				}
+				storageService, err = NewSyncingFallbackStorageService(
+					ctx,
+					storageService,
+					restAgg,
+					restAgg,
+					l1Reader,
+					*seqInboxAddress,
+					syncConf)
+				dasLifecycleManager.Register(storageService)
+				if err != nil {
+					return nil, nil, nil, nil, err
+				}
+			} else {
+				storageService = NewFallbackStorageService(storageService, restAgg, restAgg,
+					retentionPeriodSeconds, syncConf.IgnoreWriteErrors, true)
+				dasLifecycleManager.Register(storageService)
+			}
+
+		}
 	}
-
-	var daWriter DataAvailabilityServiceWriter
-	var daReader DataAvailabilityServiceReader = storageService
-	var daHealthChecker DataAvailabilityServiceHealthChecker = storageService
 
 	if config.Key.KeyDir != "" || config.Key.PrivKey != "" {
 		var seqInboxCaller *bridgegen.SequencerInboxCaller
@@ -295,6 +377,7 @@ func CreateDAComponentsForDaserver(
 			return nil, nil, nil, nil, err
 		}
 	}
+	log.Info("Da reader/writer", "reader", daReader, "writer", daWriter)
 
 	if config.RegularSyncStorage.Enable && len(syncFromStorageServices) != 0 && len(syncToStorageServices) != 0 {
 		regularlySyncStorage := NewRegularlySyncStorage(syncFromStorageServices, syncToStorageServices, config.RegularSyncStorage)
@@ -326,8 +409,10 @@ func CreateDAReaderForNode(
 		return nil, nil, errors.New("node.data-availability.rpc-aggregator is only for Batch Poster mode")
 	}
 
-	if !config.RestAggregator.Enable && !config.IpfsStorage.Enable {
-		return nil, nil, fmt.Errorf("--node.data-availability.enable was set but neither of --node.data-availability.(rest-aggregator|ipfs-storage) were enabled. When running a Nitro Anytrust node in non-Batch Poster mode, some way to get the batch data is required.")
+	if !config.NEARAggregator.Enable {
+		if !config.RestAggregator.Enable && !config.IpfsStorage.Enable {
+			return nil, nil, fmt.Errorf("--node.data-availability.enable was set but neither of --node.data-availability.(rest-aggregator|ipfs-storage) were enabled. When running a Nitro Anytrust node in non-Batch Poster mode, some way to get the batch data is required.")
+		}
 	}
 
 	if config.RestAggregator.SyncToStorage.Eager {
@@ -341,7 +426,38 @@ func CreateDAReaderForNode(
 	}
 
 	var daReader DataAvailabilityServiceReader
-	if config.RestAggregator.Enable {
+	if config.NEARAggregator.Enable {
+		log.Info("Initialising near service")
+		_, r, _, err := CreateNearDAS(ctx, config, dasLifecycleManager)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		if storageService != nil {
+			syncConf := &config.RestAggregator.SyncToStorage
+			var retentionPeriodSeconds uint64
+			if uint64(syncConf.RetentionPeriod) == math.MaxUint64 {
+				retentionPeriodSeconds = math.MaxUint64
+			} else {
+				retentionPeriodSeconds = uint64(syncConf.RetentionPeriod.Seconds())
+			}
+
+			// This falls back to REST and updates the local IPFS repo if the data is found.
+			nearSvc, err := NewNearService(*config)
+			if err != nil {
+				log.Error("initialising near service", "error", err)
+				return nil, nil, err
+			}
+			// TODO: hack fix
+			storageService = NewFallbackStorageService(storageService, r, nearSvc,
+				retentionPeriodSeconds, syncConf.IgnoreWriteErrors, true)
+			dasLifecycleManager.Register(storageService)
+
+			daReader = storageService
+		} else {
+			daReader = r
+		}
+	} else if config.RestAggregator.Enable {
 		var restAgg *SimpleDASReaderAggregator
 		restAgg, err = NewRestfulClientAggregator(ctx, &config.RestAggregator)
 		if err != nil {

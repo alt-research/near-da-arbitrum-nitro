@@ -247,6 +247,7 @@ require (
 	github.com/rogpeppe/go-internal v1.9.0 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/samber/lo v1.36.0 // indirect
+	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
 	github.com/supranational/blst v0.3.11-0.20230406105308-e9dfc5ee724b // indirect
 	github.com/urfave/cli/v2 v2.24.1 // indirect
@@ -326,6 +327,7 @@ require (
 	github.com/mattn/go-runewidth v0.0.14 // indirect
 	github.com/mitchellh/mapstructure v1.4.2
 	github.com/mitchellh/pointerstructure v1.2.0 // indirect
+	github.com/near/rollup-data-availability v0.2.4-0.20231212152220-c8df23efc3e5
 	github.com/olekukonko/tablewriter v0.0.5 // indirect
 	github.com/rs/cors v1.7.0 // indirect
 	github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible // indirect
