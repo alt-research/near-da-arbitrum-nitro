@@ -1,14 +1,14 @@
 name: Docker build CI
 run-name: Docker build CI triggered from @${{ github.actor }} of ${{ github.head_ref }}
 
-on:
-  workflow_dispatch:
-  merge_group:
-  pull_request:
-  push:
-    branches:
-      - master
-      - develop
+# on:
+#   workflow_dispatch:
+#   merge_group:
+#   pull_request:
+#   push:
+#     branches:
+#       - master
+#       - develop
 
 jobs:
   docker:
